@@ -120,3 +120,82 @@ insert into entrevista values (5,'2020-03-01'::timestamp,1);
 insert into escolha values (5,1,1,2);
 insert into escolha values (5,1,2,1);
 insert into escolha values (5,1,3,1);
+
+CREATE OR REPLACE function resultado(p_pesquisa INT, p_bairros VARCHAR[], p_cidades VARCHAR[])
+    RETURNS TABLE (pergunta INT, histograma FLOAT[]) AS $$
+    DECLARE
+        escolhaRegistro RECORD;
+        idBairros int[];
+    BEGIN
+        
+        IF p_bairros IS NULL AND p_cidades IS NULL THEN
+            SELECT array_agg(bairro.numero) FROM bairro INTO idBairros;
+        END IF; 
+
+        IF p_bairros IS NULL AND p_cidades IS NOT NULL THEN
+            SELECT array_agg(bairro.numero) FROM bairro
+            INNER JOIN cidade ON bairro.cidade = cidade.numero
+            WHERE cidade.nome = ANY(p_cidades) INTO idBairros;
+        END IF;
+
+        IF p_bairros IS NOT NULL AND p_cidades IS NULL THEN
+            SELECT array_agg(bairro.numero) FROM bairro
+            WHERE bairro.nome = ANY(p_bairros) INTO idBairros;
+        END IF;
+
+        IF p_bairros IS NOT NULL AND p_cidades IS NOT NULL THEN
+            SELECT array_agg(bairro.numero) FROM bairro
+            INNER JOIN cidade ON bairro.cidade = cidade.numero
+            WHERE bairro.nome = ANY(p_bairros) AND cidade.nome = ANY(p_cidades) INTO idBairros;
+        END IF;
+
+        CREATE TEMPORARY TABLE aux AS
+            (SELECT resposta.pergunta, numero AS resposta, 0 AS frequencia
+                FROM resposta
+                WHERE pesquisa = p_pesquisa);
+        
+        CREATE TEMPORARY TABLE temp_table2 AS (SELECT pergunta.numero, 1 AS frequencia2
+            FROM pergunta 
+                WHERE pesquisa = p_pesquisa);
+
+        FOR escolhaRegistro IN SELECT  escolha.pergunta, escolha.resposta, COUNT(escolha.resposta) AS frequencia FROM escolha
+            WHERE entrevista IN (
+                SELECT numero FROM entrevista
+                    WHERE bairro IN(
+                        SELECT numero FROM bairro
+                            WHERE numero = ANY (idBairros)
+                        )
+            ) GROUP BY escolha.pergunta, escolha.resposta LOOP
+            
+            UPDATE aux SET frequencia = escolhaRegistro.frequencia 
+            WHERE escolhaRegistro.pergunta = aux.pergunta AND escolhaRegistro.resposta = aux.resposta;
+        
+        END LOOP;      
+
+        FOR escolhaRegistro IN SELECT escolha.pergunta, COUNT(escolha.pergunta) AS frequencia2 FROM escolha
+            WHERE entrevista IN (
+                SELECT numero FROM entrevista
+                    WHERE bairro IN(
+                        SELECT numero FROM bairro
+                        WHERE numero = ANY (idBairros)
+                    )
+            ) GROUP BY escolha.pergunta LOOP
+            
+            UPDATE temp_table2 SET frequencia2 = escolhaRegistro.frequencia2
+            WHERE escolhaRegistro.pergunta = temp_table2.numero;
+
+        END LOOP;       
+            
+        FOR escolhaRegistro IN SELECT * FROM temp_table2 ORDER BY 1 LOOP 
+            SELECT ARRAY_AGG(ARRAY[resposta, a])
+                FROM (SELECT resposta, aux.frequencia::float / escolhaRegistro.frequencia2::float AS a FROM aux WHERE aux.pergunta = escolhaRegistro.numero ORDER BY resposta ) AS t
+                    INTO histograma;
+                        pergunta := escolhaRegistro.numero;
+            RETURN NEXT;
+        END LOOP;        
+
+        RETURN;
+    END;
+$$ LANGUAGE plpgsql;
+
+SELECT * FROM resultado(1, ARRAY['Tijuca'], ARRAY['Rio de Janeiro', 'São Paulo']);
